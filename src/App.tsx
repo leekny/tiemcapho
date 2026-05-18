@@ -29,7 +29,14 @@ import {
   ShieldCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword } from 'firebase/auth';
+import { 
+  onAuthStateChanged, 
+  signOut, 
+  GoogleAuthProvider, 
+  signInWithPopup, 
+  signInWithEmailAndPassword,
+  sendPasswordResetEmail 
+} from 'firebase/auth';
 import { cn, formatCurrency } from './lib/utils';
 import { Product, Order, Transaction } from './types';
 
@@ -57,6 +64,8 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isRegistering, setIsRegistering] = useState(false);
+  const [isForgotPassword, setIsForgotPassword] = useState(false);
+  const [resetSuccess, setResetSuccess] = useState(false);
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -77,10 +86,14 @@ export default function App() {
     e.preventDefault();
     setIsLoading(true);
     setLoginError('');
+    setResetSuccess(false);
     try {
       const effectiveEmail = username.includes('@') ? username : `${username}@cafe.com`;
       
-      if (isRegistering) {
+      if (isForgotPassword) {
+        await sendPasswordResetEmail(auth, effectiveEmail);
+        setResetSuccess(true);
+      } else if (isRegistering) {
         const { createUserWithEmailAndPassword } = await import('firebase/auth');
         await createUserWithEmailAndPassword(auth, effectiveEmail, password);
       } else {
@@ -126,53 +139,77 @@ export default function App() {
             <Coffee className="w-10 h-10 text-stone-800" />
           </div>
           <h1 className="text-3xl font-bold text-stone-900 mb-2 uppercase tracking-tight">CÀ PHƠ POS</h1>
-          <p className="text-stone-500 mb-8 text-sm">Hệ thống quản lý {isRegistering ? 'cửa hàng mới' : 'chuyên nghiệp'}</p>
+          <p className="text-stone-500 mb-8 text-sm">
+            {isForgotPassword ? 'Khôi phục mật khẩu' : isRegistering ? 'Hệ thống quản lý cửa hàng mới' : 'Hệ thống quản lý chuyên nghiệp'}
+          </p>
           
           <form onSubmit={handleAdminLogin} className="space-y-4 mb-6 text-left">
             <div>
               <label className="block text-xs font-bold text-stone-400 uppercase mb-1">
-                {isRegistering ? 'Email / Tên tài khoản' : 'Tài khoản'}
+                {isRegistering || isForgotPassword ? 'Email / Tên tài khoản' : 'Tài khoản'}
               </label>
               <input 
                 type="text" 
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-stone-200 text-sm"
-                placeholder={isRegistering ? "nhap@email.com" : "Ví dụ: admin"}
+                placeholder={isRegistering || isForgotPassword ? "nhap@email.com" : "Ví dụ: admin"}
                 required
               />
             </div>
-            <div>
-              <label className="block text-xs font-bold text-stone-400 uppercase mb-1">Mật khẩu</label>
-              <input 
-                type="password" 
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-stone-200 text-sm"
-                placeholder="******"
-                required
-                minLength={6}
-              />
-            </div>
+            
+            {!isForgotPassword && (
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="block text-xs font-bold text-stone-400 uppercase">Mật khẩu</label>
+                  {!isRegistering && (
+                    <button 
+                      type="button"
+                      onClick={() => setIsForgotPassword(true)}
+                      className="text-[10px] font-bold text-stone-400 hover:text-stone-900 uppercase"
+                    >
+                      Quên mật khẩu?
+                    </button>
+                  )}
+                </div>
+                <input 
+                  type="password" 
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-stone-200 text-sm"
+                  placeholder="******"
+                  required
+                  minLength={6}
+                />
+              </div>
+            )}
+
             {loginError && <p className="text-red-500 text-[10px] italic font-medium">{loginError}</p>}
+            {resetSuccess && <p className="text-emerald-600 text-[10px] font-bold italic">Yêu cầu đã gửi! Vui lòng kiểm tra email của bạn.</p>}
+
             <button
               type="submit"
               disabled={isLoading}
               className="w-full bg-stone-900 hover:bg-stone-800 text-white font-bold py-4 rounded-xl transition-all shadow-xl shadow-stone-200 flex items-center justify-center gap-2 text-sm uppercase tracking-widest"
             >
-              {isLoading ? 'Đang xử lý...' : (isRegistering ? 'ĐĂNG KÝ NGAY' : 'ĐĂNG NHẬP')}
+              {isLoading ? 'Đang xử lý...' : (isForgotPassword ? 'GỬI YÊU CẦU' : isRegistering ? 'ĐĂNG KÝ NGAY' : 'ĐĂNG NHẬP')}
               <ChevronRight className="w-4 h-4" />
             </button>
           </form>
 
           <button 
             onClick={() => {
-              setIsRegistering(!isRegistering);
+              if (isForgotPassword) {
+                setIsForgotPassword(false);
+              } else {
+                setIsRegistering(!isRegistering);
+              }
               setLoginError('');
+              setResetSuccess(false);
             }}
             className="text-xs font-bold text-stone-400 hover:text-stone-900 transition-colors uppercase tracking-widest mb-6"
           >
-            {isRegistering ? 'Đã có tài khoản? Đăng nhập' : 'Chưa có tài khoản? Đăng ký cửa hàng'}
+            {isForgotPassword ? 'Tiếp tục đăng nhập' : (isRegistering ? 'Đã có tài khoản? Đăng nhập' : 'Chưa có tài khoản? Đăng ký cửa hàng')}
           </button>
 
           <div className="relative mb-6">
