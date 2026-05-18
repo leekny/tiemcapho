@@ -11,6 +11,10 @@ service cloud.firestore {
     function isSignedIn() {
       return request.auth != null;
     }
+
+    function isSuperAdmin() {
+      return isSignedIn() && request.auth.token.email == 'leekny12@gmail.com';
+    }
     
     function isValidId(id) {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
@@ -18,26 +22,25 @@ service cloud.firestore {
 
     // Products
     match /products/{productId} {
-      allow read: if isSignedIn();
-      allow create, update: if isSignedIn() &&
-        request.resource.data.keys().hasAll(['name', 'price', 'category', 'currentStock', 'unit']);
-      allow delete: if isSignedIn();
+      allow read, update, delete: if isSuperAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
     }
 
     // Orders
     match /orders/{orderId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() &&
-        request.resource.data.keys().hasAll(['items', 'totalAmount', 'status', 'createdAt']);
-      allow delete: if isSignedIn();
+      allow read, update, delete: if isSuperAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
     }
 
     // Transactions (Ledger)
     match /transactions/{transactionId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() &&
-        request.resource.data.keys().hasAll(['type', 'amount', 'category', 'date']);
-      allow delete: if isSignedIn();
+      allow read, update, delete: if isSuperAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+    }
+
+    // Metadata (Summaries, settings)
+    match /metadata/{docId} {
+      allow read, write: if isSuperAdmin() || (isSignedIn() && docId == request.auth.uid);
     }
   }
 }

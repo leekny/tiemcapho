@@ -55,6 +55,9 @@
     "transactions": {
       "schema": "Transaction",
       "description": "Financial ledger"
+    },
+    "metadata": {
+      "description": "System summaries and counters"
     }
   }
 }
