@@ -1,6 +1,23 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, query, orderBy, addDoc, deleteDoc, doc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { 
+  collection, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  addDoc, 
+  deleteDoc, 
+  doc, 
+  limit, 
+  startAfter, 
+  getDocs, 
+  QueryDocumentSnapshot, 
+  setDoc,
+  getDoc,
+  increment,
+  updateDoc,
+  where
+} from 'firebase/firestore';
+import { db, auth } from '../lib/firebase';
 import { Transaction } from '../types';
 import { formatCurrency, cn } from '../lib/utils';
 import { 
@@ -12,16 +29,27 @@ import {
   Download,
   Calendar,
   TrendingUp,
-  XCircle
+  XCircle,
+  ChevronLeft,
+  ChevronRight,
+  Filter as FilterIcon
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export default function Accounting() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [totalStats, setTotalStats] = useState({ income: 0, expense: 0 });
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [filter, setFilter] = useState<'all' | 'income' | 'expense'>('all');
   const [search, setSearch] = useState('');
+  
+  // Advanced Pagination State
+  const [pageSnapshots, setPageSnapshots] = useState<QueryDocumentSnapshot[]>([]);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const PAGE_SIZE = 12;
 
   const [formData, setFormData] = useState({
     type: 'income' as 'income' | 'expense',
@@ -30,38 +58,127 @@ export default function Accounting() {
     description: '',
   });
 
+  // Listen for overall stats from a summary document
   useEffect(() => {
-    const q = query(collection(db, 'transactions'), orderBy('date', 'desc'));
-    return onSnapshot(q, (snapshot) => {
-      setTransactions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction)));
+    const user = auth.currentUser;
+    if (!user) return;
+    const summaryRef = doc(db, 'metadata', user.uid);
+    
+    // Initialize summary if not exists (quietly)
+    const initSummary = async () => {
+      const snap = await getDoc(summaryRef);
+      if (!snap.exists()) {
+        await setDoc(summaryRef, { income: 0, expense: 0 });
+      }
+    };
+    initSummary();
+
+    return onSnapshot(summaryRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        setTotalStats({ income: data.income || 0, expense: data.expense || 0 });
+      }
     });
   }, []);
 
+  // Fetch paginated transactions using a snapshot stack
+  const fetchTransactions = async (pageToFetch: number) => {
+    const user = auth.currentUser;
+    if (!user) return;
+    setLoading(true);
+    try {
+      let q = query(
+        collection(db, 'transactions'), 
+        where('userId', '==', user.uid),
+        orderBy('date', 'desc'),
+        limit(PAGE_SIZE)
+      );
+
+      // If fetching a page higher than 1, use the snapshot before it
+      if (pageToFetch > 1 && pageSnapshots[pageToFetch - 2]) {
+        q = query(
+          collection(db, 'transactions'), 
+          where('userId', '==', user.uid),
+          orderBy('date', 'desc'), 
+          startAfter(pageSnapshots[pageToFetch - 2]), 
+          limit(PAGE_SIZE)
+        );
+      }
+
+      const snapshot = await getDocs(q);
+      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
+      
+      setTransactions(items);
+      setHasMore(snapshot.docs.length === PAGE_SIZE);
+      
+      // Update the snapshot for the current page
+      if (snapshot.docs.length > 0) {
+        setPageSnapshots(prev => {
+          const newStack = [...prev];
+          newStack[pageToFetch - 1] = snapshot.docs[snapshot.docs.length - 1];
+          return newStack;
+        });
+      }
+      
+      setPage(pageToFetch);
+    } catch (err) {
+      console.error('Error fetching transactions:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchTransactions(1);
+  }, []); // Initial load
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    const user = auth.currentUser;
+    if (!user) return;
     try {
-      await addDoc(collection(db, 'transactions'), {
+      const transactionData = {
         ...formData,
+        userId: user.uid,
         date: new Date().toISOString()
+      };
+      
+      await addDoc(collection(db, 'transactions'), transactionData);
+      
+      // Update summary document atomically
+      const summaryRef = doc(db, 'metadata', user.uid);
+      await updateDoc(summaryRef, {
+        [formData.type]: increment(formData.amount)
       });
+
       setIsModalOpen(false);
       setFormData({ type: 'income', amount: 0, category: 'Sales', description: '' });
+      fetchTransactions(1); // Back to page 1 to see the new entry
     } catch (err) {
-      console.error(err);
+      console.error('Error saving transaction:', err);
     }
   };
 
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
-  const [itemToDelete, setItemToDelete] = useState<string | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<Transaction | null>(null);
   const [deleteReason, setDeleteReason] = useState('');
 
   const handleDelete = async () => {
-    if (!itemToDelete || !deleteReason.trim()) return;
+    const user = auth.currentUser;
+    if (!itemToDelete || !deleteReason.trim() || !user) return;
     try {
-      await deleteDoc(doc(db, 'transactions', itemToDelete));
+      await deleteDoc(doc(db, 'transactions', itemToDelete.id));
+      
+      // Update summary document atomically
+      const summaryRef = doc(db, 'metadata', user.uid);
+      await updateDoc(summaryRef, {
+        [itemToDelete.type]: increment(-itemToDelete.amount)
+      });
+
       setIsDeleteModalOpen(false);
       setItemToDelete(null);
       setDeleteReason('');
+      fetchTransactions(page); // Refresh current page
     } catch (error: any) {
       alert('Lỗi khi xóa: ' + error.message);
     }
@@ -71,9 +188,6 @@ export default function Accounting() {
     (filter === 'all' || t.type === filter) &&
     (t.description.toLowerCase().includes(search.toLowerCase()) || t.category.toLowerCase().includes(search.toLowerCase()))
   );
-
-  const totalIncome = transactions.filter(t => t.type === 'income').reduce((acc, t) => acc + t.amount, 0);
-  const totalExpense = transactions.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
 
   return (
     <div className="space-y-6">
@@ -90,39 +204,39 @@ export default function Accounting() {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
            <div className="flex items-center gap-3 mb-4">
              <div className="p-2 bg-emerald-50 rounded-lg text-emerald-600"><ArrowUpCircle /></div>
              <p className="text-sm font-bold text-stone-500 uppercase tracking-wider">Tổng thu</p>
            </div>
-           <h3 className="text-2xl font-black text-emerald-600">{formatCurrency(totalIncome)}</h3>
+           <h3 className="text-2xl font-black text-emerald-600">{formatCurrency(totalStats.income)}</h3>
         </div>
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
            <div className="flex items-center gap-3 mb-4">
              <div className="p-2 bg-red-50 rounded-lg text-red-600"><ArrowDownCircle /></div>
              <p className="text-sm font-bold text-stone-500 uppercase tracking-wider">Tổng chi</p>
            </div>
-           <h3 className="text-2xl font-black text-red-600">{formatCurrency(totalExpense)}</h3>
+           <h3 className="text-2xl font-black text-red-600">{formatCurrency(totalStats.expense)}</h3>
         </div>
         <div className="bg-stone-900 p-6 rounded-2xl shadow-xl border border-stone-800">
            <div className="flex items-center gap-3 mb-4">
              <div className="p-2 bg-stone-800 rounded-lg text-stone-400"><TrendingUp className="w-5 h-5" /></div>
              <p className="text-sm font-bold text-stone-400 uppercase tracking-wider">Số dư hiện tại</p>
            </div>
-           <h3 className="text-2xl font-black text-white">{formatCurrency(totalIncome - totalExpense)}</h3>
+           <h3 className="text-2xl font-black text-white">{formatCurrency(totalStats.income - totalStats.expense)}</h3>
         </div>
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-stone-200 overflow-hidden">
-        <div className="p-6 border-b border-stone-100 flex flex-col md:flex-row items-center justify-between gap-4 bg-stone-50/50">
-          <div className="flex gap-2">
+        <div className="p-4 sm:p-6 border-b border-stone-100 flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-stone-50/50">
+          <div className="flex gap-2 overflow-x-auto pb-2 lg:pb-0 scrollbar-hide">
             {(['all', 'income', 'expense'] as const).map((f) => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
                 className={cn(
-                  "px-4 py-1.5 rounded-lg text-xs font-bold uppercase transition-all tracking-wide border",
+                  "px-4 py-1.5 rounded-lg text-xs font-bold uppercase transition-all tracking-wide border whitespace-nowrap",
                   filter === f 
                     ? "bg-stone-900 text-white border-stone-900 shadow-lg" 
                     : "bg-white text-stone-500 border-stone-200 hover:border-stone-400"
@@ -132,73 +246,112 @@ export default function Accounting() {
               </button>
             ))}
           </div>
-          <div className="flex items-center gap-3 w-full md:w-auto">
-             <div className="relative group flex-1 md:w-64">
+          <div className="flex items-center gap-3 w-full lg:w-auto">
+             <div className="relative group flex-1 lg:w-64">
                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400" />
                <input 
                  type="text" 
                  placeholder="Tìm giao dịch..." 
                  value={search}
                  onChange={e => setSearch(e.target.value)}
-                 className="w-full bg-white border border-stone-200 rounded-xl py-2 pl-10 pr-4 outline-none focus:ring-2 focus:ring-stone-200"
+                 className="w-full bg-white border border-stone-200 rounded-xl py-2 pl-10 pr-4 outline-none focus:ring-2 focus:ring-stone-200 text-sm"
                />
              </div>
-             <button className="p-2 border border-stone-200 rounded-xl hover:bg-stone-50"><Download className="w-4 h-4 text-stone-500" /></button>
+             <button className="p-2 border border-stone-200 rounded-xl hover:bg-stone-50 shrink-0"><Download className="w-4 h-4 text-stone-500" /></button>
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto min-h-[300px]">
            <table className="w-full text-left border-collapse">
              <thead>
-               <tr className="bg-stone-50 text-stone-500 text-[10px] uppercase tracking-widest font-bold">
-                 <th className="px-6 py-4">Ngày giao dịch</th>
-                 <th className="px-6 py-4">Mô tả</th>
-                 <th className="px-6 py-4">Phân loại</th>
-                 <th className="px-6 py-4 text-right">Số tiền</th>
-                 <th className="px-6 py-4 text-right">Thao tác</th>
+               <tr className="bg-stone-50 text-stone-500 text-[10px] uppercase tracking-widest font-bold border-b border-stone-100">
+                 <th className="px-4 sm:px-6 py-2 sm:py-4">Mô tả / Ngày</th>
+                 <th className="px-6 py-4 hidden sm:table-cell">Phân loại</th>
+                 <th className="px-4 sm:px-6 py-2 sm:py-4 text-right">Số tiền</th>
+                 <th className="px-4 py-2 sm:py-4 text-right"></th>
                </tr>
              </thead>
              <tbody className="divide-y divide-stone-100">
-               {filteredTransactions.map((t) => (
-                 <tr key={t.id} className="hover:bg-stone-50 transition-colors group">
-                   <td className="px-6 py-4">
-                     <div className="flex items-center gap-2 text-stone-900 font-medium">
-                       <Calendar className="w-3 h-3 text-stone-400" />
-                       {format(new Date(t.date), 'dd/MM/yyyy HH:mm')}
-                     </div>
-                   </td>
-                   <td className="px-6 py-4">
-                     <div className="text-sm font-bold text-stone-800">{t.description || 'Không có mô tả'}</div>
-                     {t.relatedObjectId && <div className="text-[10px] text-stone-400 uppercase font-bold">REF: {t.relatedObjectId.slice(-8)}</div>}
-                   </td>
-                   <td className="px-6 py-4">
-                     <span className="text-[10px] font-bold px-2 py-0.5 rounded shadow-sm border border-stone-100 uppercase bg-stone-50 text-stone-500">
-                       {t.category}
-                     </span>
-                   </td>
-                   <td className="px-6 py-4 text-right">
-                     <div className={cn(
-                       "font-black text-base flex items-center justify-end gap-1",
-                       t.type === 'income' ? "text-emerald-600" : "text-red-500"
-                     )}>
-                       {t.type === 'income' ? '+' : '-'}{formatCurrency(t.amount)}
-                     </div>
-                   </td>
-                    <td className="px-6 py-4 text-right">
-                       <button 
-                         onClick={() => { 
-                           setItemToDelete(t.id);
-                           setIsDeleteModalOpen(true);
-                         }}
-                         className="p-2 hover:bg-red-50 text-stone-400 hover:text-red-600 rounded-lg transition-opacity"
-                       >
-                         <Trash2 className="w-4 h-4" />
-                       </button>
-                    </td>
+               {loading && filteredTransactions.length === 0 ? (
+                 <tr>
+                   <td colSpan={5} className="px-6 py-12 text-center text-stone-400 italic text-xs">Đang tải dữ liệu...</td>
                  </tr>
-               ))}
+               ) : filteredTransactions.length === 0 ? (
+                 <tr>
+                   <td colSpan={5} className="px-6 py-12 text-center text-stone-400 italic text-xs">Không tìm thấy giao dịch nào.</td>
+                 </tr>
+               ) : (
+                 filteredTransactions.map((t) => (
+                   <tr key={t.id} className="hover:bg-stone-50/50 transition-colors group">
+                     <td className="px-4 sm:px-6 py-1.5 sm:py-4">
+                        <div className="text-[9px] sm:text-xs text-stone-400 font-bold mb-0">
+                          {format(new Date(t.date), 'dd/MM HH:mm')}
+                        </div>
+                        <div className="text-[11px] sm:text-sm font-bold text-stone-800 line-clamp-1 leading-tight">{t.description || 'Không mô tả'}</div>
+                        <div className="sm:hidden text-[8px] text-stone-400 font-bold uppercase tracking-tighter">{t.category}</div>
+                     </td>
+                     <td className="px-6 py-4 hidden sm:table-cell">
+                       <span className="text-[10px] font-bold px-2 py-0.5 rounded shadow-sm border border-stone-100 uppercase bg-stone-50 text-stone-500">
+                         {t.category}
+                       </span>
+                     </td>
+                     <td className="px-4 sm:px-6 py-1.5 sm:py-4 text-right">
+                       <div className={cn(
+                         "font-black text-xs sm:text-base flex items-center justify-end gap-1 leading-none",
+                         t.type === 'income' ? "text-emerald-600" : "text-red-500"
+                       )}>
+                         {t.type === 'income' ? '+' : '-'}{formatCurrency(t.amount)}
+                       </div>
+                     </td>
+                      <td className="px-4 py-1.5 sm:py-4 text-right">
+                         <button 
+                           onClick={() => { 
+                             setItemToDelete(t);
+                             setIsDeleteModalOpen(true);
+                           }}
+                           className="p-1 sm:p-2 hover:bg-red-50 text-stone-200 hover:text-red-600 rounded-lg transition-colors"
+                         >
+                           <Trash2 className="w-3 h-3 sm:w-4 sm:h-4" />
+                         </button>
+                      </td>
+                   </tr>
+                 ))
+               )}
              </tbody>
            </table>
+        </div>
+
+        {/* Pagination Controls */}
+        <div className="p-4 bg-stone-50 border-t border-stone-100 flex items-center justify-between gap-4">
+           <div className="text-xs font-bold text-stone-500 uppercase tracking-widest flex items-center gap-4">
+             <span>Trang {page}</span>
+             {loading && <span className="text-[10px] animate-pulse">Đang tải...</span>}
+           </div>
+           <div className="flex gap-2">
+             <button
+               onClick={() => fetchTransactions(1)}
+               disabled={page === 1 || loading}
+               className="p-2 bg-white border border-stone-200 rounded-lg text-stone-600 hover:bg-stone-50 disabled:opacity-50 transition-all font-bold text-[10px] uppercase tracking-wider"
+             >
+               Đầu trang
+             </button>
+             <button
+               onClick={() => fetchTransactions(page - 1)}
+               disabled={page === 1 || loading}
+               className="flex items-center gap-2 px-3 py-2 bg-white border border-stone-200 rounded-lg text-stone-600 hover:bg-stone-50 disabled:opacity-50 transition-all font-bold text-[10px] uppercase tracking-wider shadow-sm"
+             >
+               <ChevronLeft className="w-3 h-3" />
+               Trước
+             </button>
+             <button
+               onClick={() => fetchTransactions(page + 1)}
+               disabled={!hasMore || loading}
+               className="flex items-center gap-2 px-4 py-2 bg-stone-900 text-white rounded-lg hover:bg-stone-800 disabled:opacity-50 transition-all font-bold text-[10px] uppercase tracking-wider shadow-lg shadow-stone-200"
+             >
+               Tiếp
+               <ChevronRight className="w-3 h-3" />
+             </button>
+           </div>
         </div>
       </div>
 

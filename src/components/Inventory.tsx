@@ -1,15 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  collection, 
-  onSnapshot, 
-  addDoc, 
-  updateDoc, 
-  doc, 
-  deleteDoc,
-  Timestamp,
-  increment
-} from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { collection, onSnapshot, addDoc, updateDoc, doc, deleteDoc, Timestamp, increment, query, where } from 'firebase/firestore';
+import { db, auth } from '../lib/firebase';
 import { Product, Category } from '../types';
 import { 
   Plus, 
@@ -39,7 +30,15 @@ export default function Inventory() {
   });
 
   useEffect(() => {
-    return onSnapshot(collection(db, 'products'), (snapshot) => {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    const q = query(
+      collection(db, 'products'),
+      where('userId', '==', user.uid)
+    );
+
+    return onSnapshot(q, (snapshot) => {
       setProducts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
     });
   }, []);
@@ -55,6 +54,7 @@ export default function Inventory() {
       } else {
         await addDoc(collection(db, 'products'), {
           ...formData,
+          userId: auth.currentUser?.uid,
           updatedAt: new Date().toISOString(),
           currentStock: 9999, // Placeholder
           minStock: 0,
@@ -107,8 +107,8 @@ export default function Inventory() {
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-stone-200 overflow-hidden">
-        <div className="p-6 border-b border-stone-100 flex items-center justify-between bg-stone-50/50">
-          <div className="relative group max-w-sm w-full">
+        <div className="p-4 sm:p-6 border-b border-stone-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-stone-50/50">
+          <div className="relative group w-full sm:max-w-xs">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 group-focus-within:text-stone-800 transition-colors" />
             <input 
               type="text" 
@@ -118,54 +118,43 @@ export default function Inventory() {
               className="w-full bg-white border border-stone-200 rounded-xl py-2 pl-10 pr-4 outline-none focus:ring-2 focus:ring-stone-200"
             />
           </div>
-          <div className="flex items-center gap-4 text-sm text-stone-500">
-             <span className="flex items-center gap-1.5"><Package className="w-4 h-4" /> Tổng số: {products.length} món</span>
+          <div className="flex items-center gap-4 text-xs sm:text-sm text-stone-500 font-medium">
+             <span className="flex items-center gap-1.5 whitespace-nowrap"><Package className="w-4 h-4" /> Tổng số: {products.length} món</span>
           </div>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="bg-stone-50 text-stone-500 text-[10px] uppercase tracking-widest font-bold">
-                <th className="px-6 py-4">Tên món</th>
-                <th className="px-6 py-4">Phân loại</th>
-                <th className="px-6 py-4">Giá bán</th>
-                <th className="px-6 py-4 text-right">Thao tác</th>
+              <tr className="bg-stone-50 text-stone-500 text-[10px] uppercase tracking-widest font-bold border-b border-stone-100">
+                <th className="px-4 sm:px-6 py-3 sm:py-4">Món / Loại</th>
+                <th className="px-4 sm:px-6 py-3 sm:py-4 hidden sm:table-cell">Giá bán</th>
+                <th className="px-4 sm:px-6 py-3 sm:py-4 text-right">Thao tác</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-stone-100">
               {filteredProducts.map((p) => (
                 <tr key={p.id} className="hover:bg-stone-50 transition-colors group">
-                  <td className="px-6 py-4">
-                    <div className="font-bold text-stone-900">{p.name}</div>
+                  <td className="px-4 sm:px-6 py-2.5 sm:py-4">
+                    <div className="font-bold text-stone-900 text-xs sm:text-sm">{p.name}</div>
+                    <div className="text-[10px] sm:text-xs text-stone-500 font-medium">{p.category}</div>
+                    <div className="sm:hidden font-black text-stone-900 mt-0.5 text-[10px]">{formatCurrency(p.price)}</div>
                   </td>
-                  <td className="px-6 py-4">
-                    <span className="text-xs font-semibold px-2 py-0.5 rounded-lg bg-stone-100 text-stone-600">
-                      {p.category}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 font-medium text-stone-700">{formatCurrency(p.price)}</td>
-                  <td className="px-6 py-4 text-right">
-                    <div className="flex justify-end gap-2 transition-opacity">
-                      <button 
-                        onClick={() => { 
-                          setEditingProduct(p); 
-                          setFormData({ name: p.name, price: p.price, category: p.category }); 
-                          setIsModalOpen(true); 
-                        }}
-                        className="p-2 hover:bg-stone-100 text-stone-600 rounded-lg"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-                      <button 
-                        onClick={() => { 
-                          setItemToDelete(p.id);
-                          setIsDeleteModalOpen(true);
-                        }}
-                        className="p-2 hover:bg-red-50 text-stone-400 hover:text-red-600 rounded-lg transition-opacity"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                  <td className="px-6 py-4 font-medium text-stone-700 hidden sm:table-cell text-sm">{formatCurrency(p.price)}</td>
+                  <td className="px-4 sm:px-6 py-2.5 sm:py-4 text-right">
+                    <div className="flex justify-end gap-1 sm:gap-2">
+                       <button 
+                         onClick={() => { setEditingProduct(p); setFormData({ name: p.name, price: p.price, category: p.category }); setIsModalOpen(true); }}
+                         className="p-1.5 sm:p-2 text-stone-400 hover:text-stone-900 hover:bg-stone-100 rounded-lg transition-all"
+                       >
+                         <Edit2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                       </button>
+                       <button 
+                         onClick={() => { setItemToDelete(p.id); setIsDeleteModalOpen(true); }}
+                         className="p-1.5 sm:p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                       >
+                         <Trash2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                       </button>
                     </div>
                   </td>
                 </tr>

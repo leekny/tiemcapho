@@ -9,9 +9,12 @@ import {
   increment,
   Timestamp,
   orderBy,
-  limit
+  limit,
+  where,
+  startAt,
+  endAt
 } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { db, auth } from '../lib/firebase';
 import { Product, Order, Transaction } from '../types';
 import { 
   TrendingUp, 
@@ -23,13 +26,15 @@ import {
   ArrowDownRight,
   Coffee,
   Trash2,
-  XCircle
+  XCircle,
+  PlusCircle,
+  History
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { formatCurrency, cn } from '../lib/utils';
-import { format } from 'date-fns';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
+import { format, startOfDay, endOfDay, startOfMonth } from 'date-fns';
 import { deleteDoc } from 'firebase/firestore';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 
 export default function Dashboard() {
   const [stats, setStats] = useState({
@@ -39,6 +44,7 @@ export default function Dashboard() {
     totalBalance: 0,
   });
   const [recentOrders, setRecentOrders] = useState<Order[]>([]);
+  const [ordersLimit, setOrdersLimit] = useState(6);
   const [chartData, setChartData] = useState<any[]>([]);
 
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -58,29 +64,52 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    // Basic stats aggregation
+    const user = auth.currentUser;
+    if (!user) return;
+    const userId = user.uid;
+
     const ordersRef = collection(db, 'orders');
     const transactionsRef = collection(db, 'transactions');
 
-    const unsubOrders = onSnapshot(query(ordersRef, orderBy('createdAt', 'desc'), limit(10)), (snapshot) => {
-      const orders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order));
-      setRecentOrders(orders);
-      
-      // Calculate today stats (mocking today for simplicity in this demo)
-      let todayRev = 0;
-      orders.forEach(o => todayRev += o.totalAmount);
-      setStats(prev => ({ ...prev, todayRevenue: todayRev, todayOrders: orders.length }));
+    // 1. Precise Today Stats (Date range query to reduce data transfer)
+    const today = new Date().toISOString().split('T')[0]; // Simple YYYY-MM-DD
+    const startOfToday = startOfDay(new Date()).toISOString();
+    const endOfToday = endOfDay(new Date()).toISOString();
+
+    const todayOrdersQuery = query(
+      ordersRef, 
+      where('userId', '==', userId),
+      where('createdAt', '>=', startOfToday),
+      where('createdAt', '<=', endOfToday)
+    );
+
+    const unsubTodayStats = onSnapshot(todayOrdersQuery, (snapshot) => {
+      let revenue = 0;
+      snapshot.docs.forEach(doc => {
+        revenue += (doc.data() as Order).totalAmount;
+      });
+      setStats(prev => ({ ...prev, todayRevenue: revenue, todayOrders: snapshot.docs.length }));
     });
 
-    const unsubTransactions = onSnapshot(transactionsRef, (snapshot) => {
-      const transactions = snapshot.docs.map(doc => doc.data() as Transaction);
-      let income = 0;
-      let expense = 0;
-      transactions.forEach(t => {
-        if (t.type === 'income') income += t.amount;
-        else expense += t.amount;
-      });
-      setStats(prev => ({ ...prev, totalBalance: income - expense }));
+    // 2. Recent Orders with Pagination (Load More via increasing limit)
+    const recentOrdersQuery = query(
+      ordersRef, 
+      where('userId', '==', userId),
+      orderBy('createdAt', 'desc'), 
+      limit(ordersLimit)
+    );
+    const unsubRecentOrders = onSnapshot(recentOrdersQuery, (snapshot) => {
+      const orders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order));
+      setRecentOrders(orders);
+    });
+
+    // 3. Balance calculation from summary metadata
+    const summaryRef = doc(db, 'metadata', userId);
+    const unsubSummary = onSnapshot(summaryRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        setStats(prev => ({ ...prev, totalBalance: (data.income || 0) - (data.expense || 0) }));
+      }
     });
 
     // Mock chart data
@@ -95,10 +124,11 @@ export default function Dashboard() {
     ]);
 
     return () => {
-      unsubOrders();
-      unsubTransactions();
+      unsubTodayStats();
+      unsubRecentOrders();
+      unsubSummary();
     };
-  }, []);
+  }, [ordersLimit]);
 
   const statCards = [
     { title: 'Doanh thu hôm nay', value: formatCurrency(stats.todayRevenue), icon: TrendingUp, color: 'text-emerald-600', bg: 'bg-emerald-50', trend: '+12%' },
@@ -115,30 +145,31 @@ export default function Dashboard() {
       </div>
 
       {/* Stat Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6">
         {statCards.map((stat, i) => (
           <motion.div
             key={i}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: i * 0.1 }}
-            className="bg-white p-6 rounded-2xl shadow-sm border border-stone-200"
+            className={cn(
+              "bg-white p-3 sm:p-6 rounded-2xl shadow-sm border border-stone-200 flex flex-col justify-between",
+              i === 2 && "col-span-2 lg:col-span-1" // Make the last card full width on mobile or just regular
+            )}
           >
-            <div className="flex items-center gap-4 mb-4">
-              <div className={cn("p-3 rounded-xl", stat.bg)}>
-                <stat.icon className={cn("w-6 h-6", stat.color)} />
+            <div className="flex flex-row lg:flex-col lg:items-start items-center gap-3 sm:gap-4 mb-2 sm:mb-4">
+              <div className={cn("p-2 sm:p-3 rounded-xl shrink-0", stat.bg)}>
+                <stat.icon className={cn("w-5 h-5 sm:w-6 sm:h-6", stat.color)} />
               </div>
-              <div>
-                <p className="text-sm font-medium text-stone-500">{stat.title}</p>
-                <div className="flex items-baseline gap-2">
-                   <h3 className="text-2xl font-bold text-stone-900">{stat.value}</h3>
-                </div>
+              <div className="min-w-0">
+                <p className="text-[10px] sm:text-sm font-bold text-stone-400 uppercase tracking-wider truncate">{stat.title}</p>
+                <h3 className="text-sm sm:text-2xl font-black text-stone-900 truncate">{stat.value}</h3>
               </div>
             </div>
-            <div className="flex items-center gap-1 text-xs font-medium">
-               {stat.trend.startsWith('+') ? <ArrowUpRight className="w-3 h-3 text-emerald-500" /> : null}
+            <div className="flex items-center gap-1 text-[9px] sm:text-xs font-bold uppercase tracking-tighter sm:tracking-normal">
+               {stat.trend.startsWith('+') ? <ArrowUpRight className="w-2.5 h-2.5 text-emerald-500" /> : null}
                <span className={stat.trend.startsWith('+') ? "text-emerald-500" : "text-stone-400"}>{stat.trend}</span>
-               <span className="text-stone-400 ml-1">so với hôm qua</span>
+               <span className="text-stone-400 ml-1 hidden sm:inline">so với hôm qua</span>
             </div>
           </motion.div>
         ))}
@@ -154,7 +185,7 @@ export default function Dashboard() {
                <option>30 ngày qua</option>
              </select>
            </div>
-           <div className="h-[300px] w-full">
+           <div className="h-[200px] sm:h-[300px] w-full">
              <ResponsiveContainer width="100%" height="100%">
                <AreaChart data={chartData}>
                   <defs>
@@ -177,32 +208,37 @@ export default function Dashboard() {
         </div>
 
         {/* Recent Orders */}
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-stone-200 flex flex-col">
            <div className="flex items-center justify-between mb-6">
              <h3 className="text-lg font-bold text-stone-900">Đơn hàng gần đây</h3>
-             <button className="text-xs font-semibold text-stone-500 hover:text-stone-900 transition-colors uppercase tracking-wider">Xem tất cả</button>
+             <button 
+               onClick={() => setOrdersLimit(l => l + 5)}
+               className="text-[10px] font-bold text-stone-400 hover:text-stone-900 transition-colors uppercase tracking-widest flex items-center gap-1"
+             >
+               <PlusCircle className="w-3 h-3" /> Tải thêm
+             </button>
            </div>
-           <div className="space-y-4">
+            <div className="space-y-3 flex-1">
              {recentOrders.length === 0 ? (
                <p className="text-center text-stone-400 py-8 italic">Chưa có đơn hàng nào.</p>
              ) : (
                recentOrders.map((order) => (
-                 <div key={order.id} className="flex items-center justify-between p-3 rounded-xl hover:bg-stone-50 transition-colors border border-transparent hover:border-stone-100">
-                   <div className="flex items-center gap-3">
-                     <div className="w-10 h-10 bg-stone-100 rounded-full flex items-center justify-center shrink-0">
-                       <Coffee className="w-5 h-5 text-stone-600" />
+                 <div key={order.id} className="flex items-center justify-between p-2.5 sm:p-3 rounded-xl hover:bg-stone-50 transition-colors border border-transparent hover:border-stone-100">
+                   <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+                     <div className="w-8 h-8 sm:w-10 sm:h-10 bg-stone-100 rounded-full flex items-center justify-center shrink-0">
+                       <Coffee className="w-4 h-4 sm:w-5 sm:h-5 text-stone-600" />
                      </div>
-                     <div>
-                       <p className="text-sm font-bold text-stone-900">#{order.id.slice(-5)}</p>
-                       <p className="text-xs text-stone-500">{format(new Date(order.createdAt), 'HH:mm dd/MM')}</p>
+                     <div className="min-w-0">
+                       <p className="text-xs sm:text-sm font-bold text-stone-900 truncate">#{order.id.slice(-5)}</p>
+                       <p className="text-[10px] text-stone-500">{format(new Date(order.createdAt), 'HH:mm dd/MM')}</p>
                      </div>
                    </div>
-                   <div className="flex items-center gap-3">
+                   <div className="flex items-center gap-2 sm:gap-3 shrink-0">
                      <div className="text-right">
-                       <p className="text-sm font-bold text-stone-900">{formatCurrency(order.totalAmount)}</p>
+                       <p className="text-xs sm:text-sm font-black text-stone-900">{formatCurrency(order.totalAmount)}</p>
                        <span className={cn(
-                         "text-[10px] px-2 py-0.5 rounded-full font-bold uppercase",
-                         order.status === 'completed' ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"
+                         "text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase",
+                         order.status === 'completed' ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-600"
                        )}>
                          {order.status === 'completed' ? 'Xong' : 'Hủy'}
                        </span>
@@ -215,13 +251,23 @@ export default function Dashboard() {
                        }}
                        className="p-1.5 hover:bg-red-50 text-stone-300 hover:text-red-500 rounded-lg transition-colors"
                      >
-                       <Trash2 className="w-4 h-4" />
+                       <Trash2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                      </button>
                    </div>
                  </div>
                ))
              )}
            </div>
+           {recentOrders.length > 0 && (
+             <div className="mt-6 pt-4 border-t border-stone-100 flex justify-center">
+                <button 
+                  onClick={() => setOrdersLimit(l => l + 5)}
+                  className="flex items-center gap-2 text-xs font-bold text-stone-500 hover:text-stone-900 uppercase tracking-widest"
+                >
+                  <History className="w-4 h-4" /> Xem thêm đơn hàng
+                </button>
+             </div>
+           )}
         </div>
       </div>
 

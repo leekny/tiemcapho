@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { collection, onSnapshot, query, orderBy, where, limit, getDocs, startAfter, QueryDocumentSnapshot } from 'firebase/firestore';
+import { db, auth } from '../lib/firebase';
 import { Transaction, Order } from '../types';
 import { formatCurrency, cn } from '../lib/utils';
 import { 
@@ -9,7 +9,11 @@ import {
   Calendar, 
   ChevronRight,
   TrendingUp,
-  PieChart as PieChartIcon
+  PieChart as PieChartIcon,
+  Filter,
+  ArrowDownCircle,
+  ArrowUpCircle,
+  FileText
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -24,27 +28,101 @@ import {
   Cell,
   Legend
 } from 'recharts';
-import { motion } from 'framer-motion';
+import { format, startOfMonth, endOfMonth, subMonths } from 'date-fns';
+import { motion, AnimatePresence } from 'framer-motion';
 
 export default function Reports() {
   const [data, setData] = useState<{ name: string; value: number }[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  
+  // Date Range State
+  const [dateRange, setDateRange] = useState({
+    start: startOfMonth(new Date()).toISOString(),
+    end: endOfMonth(new Date()).toISOString()
+  });
+
+  // Detailed List Pagination
+  const [detailedTxs, setDetailedTxs] = useState<Transaction[]>([]);
+  const [lastDoc, setLastDoc] = useState<QueryDocumentSnapshot | null>(null);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingList, setLoadingList] = useState(false);
+  const PAGE_SIZE = 10;
 
   useEffect(() => {
-    return onSnapshot(collection(db, 'transactions'), (snapshot) => {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    // 1. Fetch data for Charts (Filtered by Month and User)
+    const txQuery = query(
+      collection(db, 'transactions'),
+      where('userId', '==', user.uid),
+      where('date', '>=', dateRange.start),
+      where('date', '<=', dateRange.end),
+      orderBy('date', 'desc')
+    );
+
+    return onSnapshot(txQuery, (snapshot) => {
       const txs = snapshot.docs.map(doc => doc.data() as Transaction);
       setTransactions(txs);
       
-      // Group by category for PieChart
       const categories: Record<string, number> = {};
       txs.forEach(t => {
-        categories[t.category] = (categories[t.category] || 0) + (t.type === 'expense' ? t.amount : 0);
+        if (t.type === 'expense') {
+          categories[t.category] = (categories[t.category] || 0) + t.amount;
+        }
       });
       
       setData(Object.entries(categories).map(([name, value]) => ({ name, value })));
     });
+  }, [dateRange]);
+
+  const fetchDetailedReport = async (isNew = true) => {
+    const user = auth.currentUser;
+    if (!user) return;
+    setLoadingList(true);
+    try {
+      let q = query(
+        collection(db, 'transactions'),
+        where('userId', '==', user.uid),
+        orderBy('date', 'desc'),
+        limit(PAGE_SIZE)
+      );
+
+      if (!isNew && lastDoc) {
+        q = query(
+          collection(db, 'transactions'), 
+          where('userId', '==', user.uid),
+          orderBy('date', 'desc'), 
+          startAfter(lastDoc), 
+          limit(PAGE_SIZE)
+        );
+      }
+
+      const snapshot = await getDocs(q);
+      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
+      
+      if (isNew) {
+        setDetailedTxs(items);
+        setPage(1);
+      } else {
+        setDetailedTxs(prev => [...prev, ...items]);
+        setPage(p => p + 1);
+      }
+      
+      setLastDoc(snapshot.docs[snapshot.docs.length - 1] || null);
+      setHasMore(snapshot.docs.length === PAGE_SIZE);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingList(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDetailedReport();
   }, []);
 
   const analyzeWithAI = async () => {
@@ -69,9 +147,30 @@ export default function Reports() {
 
   return (
     <div className="space-y-8 pb-20">
-      <div>
-        <h1 className="text-2xl font-bold text-stone-900">Báo cáo chi tiết</h1>
-        <p className="text-stone-500">Phân tích sâu về doanh thu, chi phí và hiệu quả kinh doanh.</p>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-stone-900">Báo cáo chi tiết</h1>
+          <p className="text-stone-500">Phân tích sâu về doanh thu, chi phí và hiệu quả kinh doanh.</p>
+        </div>
+        <div className="flex items-center gap-3 bg-white p-1.5 rounded-2xl border border-stone-200 shadow-sm">
+           <Calendar className="w-4 h-4 text-stone-400 ml-2" />
+           <select 
+             className="bg-transparent border-none text-sm font-bold text-stone-700 outline-none pr-4"
+             onChange={(e) => {
+               const val = e.target.value;
+               const now = new Date();
+               if (val === 'thisMonth') {
+                 setDateRange({ start: startOfMonth(now).toISOString(), end: endOfMonth(now).toISOString() });
+               } else if (val === 'lastMonth') {
+                 const lm = subMonths(now, 1);
+                 setDateRange({ start: startOfMonth(lm).toISOString(), end: endOfMonth(lm).toISOString() });
+               }
+             }}
+           >
+             <option value="thisMonth">Tháng này</option>
+             <option value="lastMonth">Tháng trước</option>
+           </select>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -162,8 +261,7 @@ export default function Reports() {
          <div className="h-[300px] w-full">
             <ResponsiveContainer width="100%" height="100%">
                <BarChart data={[
-                 { name: 'Tháng này', thu: 45000000, chi: 12000000 },
-                 { name: 'Tháng trước', thu: 38000000, chi: 15000000 }
+                 { name: 'Tháng này', thu: transactions.filter(t => t.type === 'income').reduce((a, b) => a + b.amount, 0), chi: transactions.filter(t => t.type === 'expense').reduce((a, b) => a + b.amount, 0) },
                ]}>
                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
                  <XAxis dataKey="name" />
@@ -174,6 +272,64 @@ export default function Reports() {
                </BarChart>
             </ResponsiveContainer>
          </div>
+      </div>
+
+      {/* Detailed Activity List (Paginated) */}
+      <div className="bg-white rounded-2xl shadow-sm border border-stone-200 overflow-hidden">
+        <div className="p-6 border-b border-stone-100 flex items-center justify-between bg-stone-50/50">
+          <h3 className="text-lg font-bold text-stone-900 flex items-center gap-2">
+            <FileText className="w-5 h-5 text-stone-400" />
+            Chi tiết hoạt động gần đây
+          </h3>
+          <span className="text-xs font-bold text-stone-400 uppercase tracking-widest bg-white px-3 py-1 rounded-full border border-stone-100 shadow-sm">
+            Trang {page}
+          </span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-stone-50/50 text-stone-400 text-[10px] uppercase font-bold tracking-widest border-b border-stone-100">
+                <th className="px-6 py-4">Thời gian</th>
+                <th className="px-6 py-4">Hoạt động</th>
+                <th className="px-6 py-4 text-right">Giá trị</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-stone-100">
+              {detailedTxs.map((t) => (
+                <tr key={t.id} className="hover:bg-stone-50 transition-colors">
+                  <td className="px-6 py-4 text-sm text-stone-600">
+                    {format(new Date(t.date), 'dd/MM HH:mm')}
+                  </td>
+                  <td className="px-6 py-4">
+                    <p className="text-sm font-bold text-stone-900">{t.description || t.category}</p>
+                    <p className="text-[10px] text-stone-400 uppercase font-medium">{t.category}</p>
+                  </td>
+                  <td className="px-6 py-4 text-right font-black">
+                    <div className={cn(
+                      "flex items-center justify-end gap-1",
+                      t.type === 'income' ? "text-emerald-600" : "text-red-500"
+                    )}>
+                      {t.type === 'income' ? <ArrowUpCircle className="w-3 h-3" /> : <ArrowDownCircle className="w-3 h-3" />}
+                      {formatCurrency(t.amount)}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {hasMore && (
+          <div className="p-6 border-t border-stone-100 bg-stone-50/30 flex justify-center">
+            <button 
+              onClick={() => fetchDetailedReport(false)}
+              disabled={loadingList}
+              className="flex items-center gap-2 text-xs font-bold text-stone-500 hover:text-stone-900 transition-colors uppercase tracking-widest"
+            >
+              {loadingList ? 'Đang tải...' : 'Tải thêm dữ liệu chi tiết'}
+              {!loadingList && <ChevronRight className="w-4 h-4" />}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

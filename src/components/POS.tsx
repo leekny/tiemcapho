@@ -6,9 +6,12 @@ import {
   Timestamp,
   updateDoc,
   doc,
-  increment
+  increment,
+  setDoc,
+  query,
+  where
 } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { db, auth } from '../lib/firebase';
 import { Product, OrderItem } from '../types';
 import { Plus, Minus, Trash2, CreditCard, Search, Coffee, Filter, Settings, X, Image as ImageIcon, FileText, Smartphone, Printer } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -20,6 +23,7 @@ export default function POS() {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState<string>('All');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [mobileView, setMobileView] = useState<'menu' | 'cart'>('menu');
 
   // Receipt Settings
   const [showReceiptSettings, setShowReceiptSettings] = useState(false);
@@ -32,7 +36,15 @@ export default function POS() {
   });
 
   useEffect(() => {
-    return onSnapshot(collection(db, 'products'), (snapshot) => {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    const q = query(
+      collection(db, 'products'),
+      where('userId', '==', user.uid)
+    );
+
+    return onSnapshot(q, (snapshot) => {
       setProducts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
     });
   }, []);
@@ -59,17 +71,26 @@ export default function POS() {
     }).filter(item => item.quantity > 0));
   };
 
+  const updatePrice = (productId: string, newPrice: number) => {
+    setCart(prev => prev.map(item => 
+      item.productId === productId ? { ...item, price: newPrice } : item
+    ));
+  };
+
   const total = cart.reduce((acc, item) => acc + item.price * item.quantity, 0);
 
   const handleCheckout = async () => {
-    if (cart.length === 0) return;
+    if (cart.length === 0 || !auth.currentUser) return;
     setIsProcessing(true);
+    const userId = auth.currentUser.uid;
+
     try {
       // 1. Create order
       const orderRef = await addDoc(collection(db, 'orders'), {
         items: cart,
         totalAmount: total,
         status: 'completed',
+        userId,
         createdAt: new Date().toISOString()
       });
 
@@ -80,7 +101,19 @@ export default function POS() {
         category: 'Sales',
         description: `Order #${orderRef.id.slice(-5)}`,
         date: new Date().toISOString(),
-        relatedObjectId: orderRef.id
+        relatedObjectId: orderRef.id,
+        userId
+      });
+
+      // 3. Update accounting summary
+      const summaryRef = doc(db, 'metadata', userId);
+      await updateDoc(summaryRef, {
+        income: increment(total)
+      }).catch(async (err) => {
+        // If meta doc doesn't exist, create it
+        if (err.code === 'not-found') {
+          await setDoc(summaryRef, { income: total, expense: 0 });
+        }
       });
 
       setCart([]);
@@ -100,11 +133,14 @@ export default function POS() {
 
   return (
     <>
-      <div className="flex gap-8 h-full">
+      <div className="flex flex-col lg:flex-row gap-6 h-full relative">
       {/* Menu Area */}
-      <div className="flex-1 flex flex-col gap-6">
+      <div className={cn(
+        "flex-1 flex flex-col gap-6",
+        mobileView === 'cart' && "hidden lg:flex"
+      )}>
         <div className="flex flex-col sm:flex-row gap-4 items-center">
-          <div className="relative flex-1 group">
+          <div className="relative flex-1 group w-full">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-stone-400 group-focus-within:text-stone-800 transition-colors" />
             <input
               type="text"
@@ -134,24 +170,28 @@ export default function POS() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-6 pb-8">
+        <div className="flex flex-col lg:grid lg:grid-cols-3 xl:grid-cols-4 px-1 gap-2 sm:gap-6 pb-24 lg:pb-8">
            {filteredProducts.map((p) => (
              <motion.button
                key={p.id}
                whileTap={{ scale: 0.98 }}
-               onClick={() => addToCart(p)}
+               onClick={() => {
+                 addToCart(p);
+               }}
                className={cn(
-                 "bg-white p-4 rounded-2xl border border-stone-200 shadow-sm text-left group transition-all hover:shadow-xl hover:border-stone-300 relative overflow-hidden"
+                 "bg-white p-2.5 sm:p-4 rounded-xl sm:rounded-2xl border border-stone-200 shadow-sm text-left group transition-all hover:shadow-xl hover:border-stone-300 relative overflow-hidden flex lg:flex-col items-center lg:items-stretch gap-3 lg:gap-0"
                )}
              >
-               <div className="aspect-square bg-stone-100 rounded-xl mb-4 flex items-center justify-center group-hover:scale-105 transition-transform">
-                 <Coffee className="w-10 h-10 text-stone-400" />
+               <div className="w-12 h-12 lg:w-full lg:aspect-square bg-stone-100 rounded-lg lg:rounded-xl lg:mb-4 flex items-center justify-center group-hover:scale-105 transition-transform shrink-0">
+                 <Coffee className="w-6 h-6 sm:w-10 sm:h-10 text-stone-400" />
                </div>
-               <h4 className="font-bold text-stone-900 mb-1 line-clamp-1">{p.name}</h4>
-               <p className="text-sm font-medium text-stone-500 mb-2">{formatCurrency(p.price)}</p>
-               <div className="flex items-center justify-end">
-                 <div className="bg-stone-900 text-white p-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity">
-                   <Plus className="w-4 h-4" />
+               <div className="flex-1 min-w-0">
+                 <h4 className="font-bold text-stone-900 text-xs sm:text-base mb-0 sm:mb-1 truncate">{p.name}</h4>
+                 <p className="text-[10px] sm:text-sm font-medium text-stone-500">{formatCurrency(p.price)}</p>
+               </div>
+               <div className="flex items-center justify-end shrink-0">
+                 <div className="bg-stone-900 text-white p-1.5 rounded-lg opacity-100 lg:opacity-0 group-hover:opacity-100 transition-opacity">
+                   <Plus className="w-3 h-3 sm:w-4 sm:h-4" />
                  </div>
                </div>
              </motion.button>
@@ -159,15 +199,45 @@ export default function POS() {
         </div>
       </div>
 
+      {/* Mobile Cart Toggle Bar */}
+      {cart.length > 0 && mobileView === 'menu' && (
+        <motion.div 
+          initial={{ y: 100 }}
+          animate={{ y: 0 }}
+          className="lg:hidden fixed bottom-6 left-6 right-6 z-40"
+        >
+          <button 
+            onClick={() => setMobileView('cart')}
+            className="w-full bg-stone-900 text-white p-4 rounded-2xl shadow-2xl flex items-center justify-between font-bold"
+          >
+            <div className="flex items-center gap-3">
+              <div className="bg-stone-800 px-3 py-1 rounded-lg">{cart.reduce((a, b) => a + b.quantity, 0)} món</div>
+              <span>Xem giỏ hàng</span>
+            </div>
+            <span>{formatCurrency(total)}</span>
+          </button>
+        </motion.div>
+      )}
+
       {/* Cart Area */}
-      <div className="w-[400px] bg-white rounded-3xl border border-stone-200 shadow-xl flex flex-col overflow-hidden sticky top-0 h-full max-h-[calc(100vh-160px)]">
-        <div className="p-6 border-b border-stone-100 bg-stone-50/50">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xl font-bold text-stone-900 flex items-center gap-2">
-              <CreditCard className="w-5 h-5" /> 
+      <div className={cn(
+        "w-full lg:w-[400px] bg-white lg:rounded-3xl border lg:border-stone-200 shadow-xl flex flex-col overflow-hidden lg:sticky lg:top-0 h-full max-h-[calc(100vh-160px)] z-40 fixed inset-0 lg:relative",
+        mobileView === 'menu' && "hidden lg:flex"
+      )}>
+        <div className="p-4 sm:p-6 border-b border-stone-100 bg-stone-50/50 flex items-center justify-between lg:block">
+          <button 
+            onClick={() => setMobileView('menu')}
+            className="lg:hidden p-2 text-stone-600 hover:bg-stone-100 rounded-xl"
+          >
+            <X className="w-6 h-6" />
+          </button>
+          
+          <div className="flex-1 lg:flex lg:items-center lg:justify-between lg:mb-2 text-center lg:text-left">
+            <h3 className="text-lg sm:text-xl font-bold text-stone-900 flex items-center justify-center lg:justify-start gap-2">
+              <CreditCard className="w-5 h-5 hidden sm:block" /> 
               Giỏ hàng
             </h3>
-            <div className="flex items-center gap-2">
+            <div className="hidden lg:flex items-center gap-2">
               <button 
                 onClick={() => setShowReceiptSettings(true)}
                 className="p-1.5 text-stone-400 hover:text-stone-800 hover:bg-stone-200 rounded-lg transition-all"
@@ -175,15 +245,30 @@ export default function POS() {
               >
                 <Settings className="w-5 h-5" />
               </button>
-              <button onClick={() => setCart([])} className="text-stone-400 hover:text-red-500 transition-colors">
+              <button onClick={() => { setCart([]); setMobileView('menu'); }} className="text-stone-400 hover:text-red-500 transition-colors">
                 <Trash2 className="w-5 h-5" />
               </button>
             </div>
           </div>
-          <p className="text-stone-500 text-sm">Hóa đơn mẫu #{Math.floor(Math.random()*10000)}</p>
+          <p className="text-stone-500 text-sm hidden lg:block">Hóa đơn mẫu #{Math.floor(Math.random()*10000)}</p>
+
+          <div className="lg:hidden flex items-center gap-2">
+             <button 
+                onClick={() => setShowReceiptSettings(true)}
+                className="p-2 text-stone-400 hover:text-stone-800"
+              >
+                <Settings className="w-5 h-5" />
+              </button>
+              <button 
+                onClick={() => { setCart([]); setMobileView('menu'); }}
+                className="p-2 text-stone-400 hover:text-red-500"
+              >
+                <Trash2 className="w-5 h-5" />
+              </button>
+          </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+        <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 space-y-4">
           <AnimatePresence>
             {cart.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-stone-400 space-y-4 py-20">
@@ -199,9 +284,17 @@ export default function POS() {
                   exit={{ opacity: 0, x: -20 }}
                   className="flex items-center justify-between group"
                 >
-                  <div className="flex-1">
-                    <h5 className="text-sm font-bold text-stone-900">{item.name}</h5>
-                    <p className="text-xs text-stone-500">{formatCurrency(item.price)}</p>
+                  <div className="flex-1 min-w-0 pr-2">
+                    <h5 className="text-[11px] sm:text-sm font-bold text-stone-900 truncate leading-tight">{item.name}</h5>
+                    <div className="flex items-center gap-1 group/price">
+                      <input 
+                        type="number"
+                        value={item.price}
+                        onChange={(e) => updatePrice(item.productId, Number(e.target.value))}
+                        className="w-16 sm:w-20 bg-transparent border-b border-dashed border-stone-200 text-[10px] sm:text-xs text-stone-500 font-bold focus:border-stone-900 outline-none transition-colors"
+                      />
+                      <span className="text-[10px] text-stone-400">đ</span>
+                    </div>
                   </div>
                   <div className="flex items-center gap-3 bg-stone-100 p-1 rounded-xl">
                     <button 
@@ -224,15 +317,11 @@ export default function POS() {
           </AnimatePresence>
         </div>
 
-        <div className="p-8 border-t border-stone-100 bg-stone-50/50 space-y-4">
+        <div className="p-6 sm:p-8 border-t border-stone-100 bg-stone-50/50 space-y-4 pb-12 sm:pb-8">
           <div className="space-y-2">
-            <div className="flex justify-between text-stone-500 text-sm">
+            <div className="flex justify-between text-stone-500 text-sm font-medium">
               <span>Tạm tính</span>
               <span>{formatCurrency(total)}</span>
-            </div>
-            <div className="flex justify-between text-stone-500 text-sm">
-              <span>Thuế (0%)</span>
-              <span>{formatCurrency(0)}</span>
             </div>
             <div className="flex justify-between text-xl font-black text-stone-900 pt-2 border-t border-stone-200">
               <span>Tổng cộng</span>
@@ -241,10 +330,13 @@ export default function POS() {
           </div>
           <button 
             disabled={cart.length === 0 || isProcessing}
-            onClick={handleCheckout}
+            onClick={async () => {
+              await handleCheckout();
+              setMobileView('menu');
+            }}
             className="w-full bg-stone-900 text-white py-4 rounded-2xl font-bold shadow-xl shadow-stone-200 hover:bg-stone-800 disabled:opacity-50 disabled:grayscale transition-all flex items-center justify-center gap-2"
           >
-            {isProcessing ? 'Đang xử lý...' : 'THANH TOÁN'}
+            {isProcessing ? 'Đang xử lý...' : 'XÁC NHẬN THANH TOÁN'}
             {!isProcessing && <CreditCard className="w-5 h-5" />}
           </button>
         </div>
