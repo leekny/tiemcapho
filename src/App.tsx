@@ -50,7 +50,7 @@ import Account from './components/Account';
 import SuperAdmin from './components/SuperAdmin';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'pos' | 'inventory' | 'accounting' | 'reports' | 'account' | 'system'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'pos' | 'inventory' | 'accounting' | 'reports' | 'account' | 'system'>('pos');
   const [user, setUser] = useState(auth.currentUser);
   
   const isSuperAdmin = user?.email === 'leekny12@gmail.com';
@@ -70,6 +70,9 @@ export default function App() {
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
       setUser(u);
+      if (u) {
+        setActiveTab('pos');
+      }
     });
   }, []);
 
