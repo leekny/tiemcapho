@@ -32,17 +32,73 @@ import {
   XCircle,
   ChevronLeft,
   ChevronRight,
-  Filter as FilterIcon
+  Filter as FilterIcon,
+  Edit2
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 export default function Accounting() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [totalStats, setTotalStats] = useState({ income: 0, expense: 0 });
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [filter, setFilter] = useState<'all' | 'income' | 'expense'>('all');
   const [search, setSearch] = useState('');
+
+  const handleOpenAdd = () => {
+    setEditingTransaction(null);
+    setFormData({ type: 'income', amount: 0, category: 'Sales', description: '' });
+    setIsModalOpen(true);
+  };
+
+  const handleOpenEdit = (t: Transaction) => {
+    setEditingTransaction(t);
+    setFormData({
+      type: t.type,
+      amount: t.amount,
+      category: t.category,
+      description: t.description || '',
+    });
+    setIsModalOpen(true);
+  };
   
   // Advanced Pagination State
   const [pageSnapshots, setPageSnapshots] = useState<QueryDocumentSnapshot[]>([]);
@@ -137,23 +193,77 @@ export default function Accounting() {
     const user = auth.currentUser;
     if (!user) return;
     try {
-      const transactionData = {
-        ...formData,
-        userId: user.uid,
-        date: new Date().toISOString()
-      };
-      
-      await addDoc(collection(db, 'transactions'), transactionData);
-      
-      // Update summary document atomically
       const summaryRef = doc(db, 'metadata', user.uid);
-      await updateDoc(summaryRef, {
-        [formData.type]: increment(formData.amount)
-      });
+
+      if (editingTransaction) {
+        // Mode: CHỈNH SỬA GIAO DỊCH BẰNG UPDATE
+        const transactionRef = doc(db, 'transactions', editingTransaction.id);
+        const oldType = editingTransaction.type;
+        const oldAmount = editingTransaction.amount;
+        const newType = formData.type;
+        const newAmount = formData.amount;
+
+        const updatedData = {
+          type: newType,
+          amount: newAmount,
+          category: formData.category,
+          description: formData.description,
+          updatedAt: new Date().toISOString()
+        };
+
+        try {
+          await updateDoc(transactionRef, updatedData);
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, `transactions/${editingTransaction.id}`);
+        }
+
+        // Adjust overall stats
+        const statsUpdates: any = {};
+        if (oldType === newType) {
+          const delta = newAmount - oldAmount;
+          if (delta !== 0) {
+            statsUpdates[newType] = increment(delta);
+          }
+        } else {
+          statsUpdates[oldType] = increment(-oldAmount);
+          statsUpdates[newType] = increment(newAmount);
+        }
+
+        if (Object.keys(statsUpdates).length > 0) {
+          try {
+            await updateDoc(summaryRef, statsUpdates);
+          } catch (error) {
+            handleFirestoreError(error, OperationType.WRITE, `metadata/${user.uid}`);
+          }
+        }
+      } else {
+        // Mode: THÊM MỚI GIAO DỊCH BẰNG ADD
+        const transactionData = {
+          ...formData,
+          userId: user.uid,
+          date: new Date().toISOString()
+        };
+        
+        try {
+          await addDoc(collection(db, 'transactions'), transactionData);
+        } catch (error) {
+          handleFirestoreError(error, OperationType.CREATE, 'transactions');
+        }
+        
+        // Update summary document atomically
+        try {
+          await updateDoc(summaryRef, {
+            [formData.type]: increment(formData.amount)
+          });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, `metadata/${user.uid}`);
+        }
+      }
 
       setIsModalOpen(false);
+      setEditingTransaction(null);
       setFormData({ type: 'income', amount: 0, category: 'Sales', description: '' });
-      fetchTransactions(1); // Back to page 1 to see the new entry
+      fetchTransactions(editingTransaction ? page : 1); // Stay on current page if editing, otherwise back to page 1
     } catch (err) {
       console.error('Error saving transaction:', err);
     }
@@ -197,8 +307,8 @@ export default function Accounting() {
           <p className="text-stone-500">Theo dõi dòng tiền và nguồn chi trong cửa hàng.</p>
         </div>
         <button 
-          onClick={() => setIsModalOpen(true)}
-          className="bg-stone-900 text-white px-6 py-2.5 rounded-xl font-bold shadow-lg hover:bg-stone-800 transition-all flex items-center gap-2"
+          onClick={handleOpenAdd}
+          className="bg-stone-900 text-white px-6 py-2.5 rounded-xl font-bold shadow-lg hover:bg-stone-800 transition-all flex items-center gap-2 cursor-pointer"
         >
           <Plus className="w-5 h-5" /> Thêm giao dịch
         </button>
@@ -304,15 +414,25 @@ export default function Accounting() {
                        </div>
                      </td>
                       <td className="px-4 py-1.5 sm:py-4 text-right">
-                         <button 
-                           onClick={() => { 
-                             setItemToDelete(t);
-                             setIsDeleteModalOpen(true);
-                           }}
-                           className="p-1 sm:p-2 hover:bg-red-50 text-stone-200 hover:text-red-600 rounded-lg transition-colors"
-                         >
-                           <Trash2 className="w-3 h-3 sm:w-4 sm:h-4" />
-                         </button>
+                         <div className="flex justify-end items-center gap-1.5 sm:gap-2">
+                           <button 
+                             onClick={() => handleOpenEdit(t)}
+                             className="p-1 sm:p-2 hover:bg-stone-100 text-stone-300 hover:text-stone-700 rounded-lg transition-colors cursor-pointer"
+                             title="Chỉnh sửa"
+                           >
+                             <Edit2 className="w-3 h-3 sm:w-4 sm:h-4" />
+                           </button>
+                           <button 
+                             onClick={() => { 
+                               setItemToDelete(t);
+                               setIsDeleteModalOpen(true);
+                             }}
+                             className="p-1 sm:p-2 hover:bg-red-50 text-stone-300 hover:text-red-600 rounded-lg transition-colors cursor-pointer"
+                             title="Xoá"
+                           >
+                             <Trash2 className="w-3 h-3 sm:w-4 sm:h-4" />
+                           </button>
+                         </div>
                       </td>
                    </tr>
                  ))
@@ -365,18 +485,24 @@ export default function Accounting() {
               className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden"
             >
               <div className="p-8 border-b border-stone-100 bg-stone-50/50 flex items-center justify-between">
-                <h3 className="text-xl font-bold">Thêm giao dịch mới</h3>
-                <button onClick={() => setIsModalOpen(false)} className="text-stone-400 hover:text-stone-900"><XCircle /></button>
+                <h3 className="text-xl font-bold font-sans">
+                  {editingTransaction ? 'Chỉnh sửa giao dịch' : 'Thêm giao dịch mới'}
+                </h3>
+                <button type="button" onClick={() => setIsModalOpen(false)} className="text-stone-400 hover:text-stone-900 cursor-pointer"><XCircle /></button>
               </div>
-              <form onSubmit={handleSave} className="p-8 space-y-4">
+              <form onSubmit={handleSave} className="p-8 space-y-4 font-sans">
                 <div className="flex p-1 bg-stone-100 rounded-xl">
                   {(['income', 'expense'] as const).map(type => (
                     <button
                       key={type}
                       type="button"
-                      onClick={() => setFormData({...formData, type})}
+                      onClick={() => setFormData({
+                        ...formData, 
+                        type, 
+                        category: type === 'income' ? 'Sales' : 'Supplies'
+                      })}
                       className={cn(
-                        "flex-1 py-3 rounded-lg text-sm font-bold transition-all",
+                        "flex-1 py-3 rounded-lg text-sm font-bold transition-all cursor-pointer",
                         formData.type === type ? "bg-white text-stone-900 shadow-sm" : "text-stone-500 hover:text-stone-700"
                       )}
                     >
@@ -386,25 +512,39 @@ export default function Accounting() {
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-stone-700 mb-1">Số tiền (VNĐ) *</label>
-                  <input type="number" required value={formData.amount} onChange={e => setFormData({...formData, amount: Number(e.target.value)})} className="w-full border border-stone-200 rounded-xl px-4 py-2" />
+                  <input type="number" required value={formData.amount || ''} onChange={e => setFormData({...formData, amount: Number(e.target.value)})} className="w-full border border-stone-200 rounded-xl px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-stone-200" />
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-stone-700 mb-1">Danh mục *</label>
-                  <select value={formData.category} onChange={e => setFormData({...formData, category: e.target.value})} className="w-full border border-stone-200 rounded-xl px-4 py-2">
-                    <option value="Sales">Doanh thu bán hàng</option>
-                    <option value="Supplies">Nguyên liệu / Nhập hàng</option>
-                    <option value="Rent">Mặt bằng</option>
-                    <option value="Salary">Lương nhân viên</option>
-                    <option value="Electricity">Điện nước</option>
-                    <option value="Marketing">Quảng bá</option>
-                    <option value="Other">Khác</option>
+                  <select 
+                    value={formData.category} 
+                    onChange={e => setFormData({...formData, category: e.target.value})} 
+                    className="w-full border border-stone-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-stone-200"
+                  >
+                    {formData.type === 'income' ? (
+                      <>
+                        <option value="Sales">Doanh thu bán hàng</option>
+                        <option value="Other">Khác</option>
+                      </>
+                    ) : (
+                      <>
+                        <option value="Supplies">Nguyên liệu / Nhập hàng</option>
+                        <option value="Rent">Mặt bằng</option>
+                        <option value="Salary">Lương nhân viên</option>
+                        <option value="Electricity">Điện nước</option>
+                        <option value="Marketing">Quảng bá</option>
+                        <option value="Other">Khác</option>
+                      </>
+                    )}
                   </select>
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-stone-700 mb-1">Ghi chú</label>
-                  <textarea value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} className="w-full border border-stone-200 rounded-xl px-4 py-2 h-24" />
+                  <textarea value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} className="w-full border border-stone-200 rounded-xl px-4 py-2 h-24 text-sm outline-none focus:ring-2 focus:ring-stone-200" />
                 </div>
-                <button type="submit" className="w-full bg-stone-900 text-white font-bold py-3 rounded-xl mt-4 shadow-xl hover:bg-stone-800 transition-all">LƯU GIAO DỊCH</button>
+                <button type="submit" className="w-full bg-stone-900 hover:bg-stone-800 text-white font-bold py-3 rounded-xl mt-4 shadow-xl transition-all cursor-pointer">
+                  {editingTransaction ? 'CẬP NHẬT GIAO DỊCH' : 'LƯU GIAO DỊCH'}
+                </button>
               </form>
             </motion.div>
           </div>
