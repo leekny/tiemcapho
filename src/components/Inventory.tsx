@@ -26,6 +26,8 @@ export default function Inventory() {
   const [formData, setFormData] = useState({
     name: '',
     price: 0,
+    priceM: 0,
+    priceL: 0,
     category: 'Coffee' as Category,
   });
 
@@ -49,11 +51,15 @@ export default function Inventory() {
       if (editingProduct) {
         await updateDoc(doc(db, 'products', editingProduct.id), {
           ...formData,
+          priceM: formData.priceM || null,
+          priceL: formData.priceL || null,
           updatedAt: new Date().toISOString()
         });
       } else {
         await addDoc(collection(db, 'products'), {
           ...formData,
+          priceM: formData.priceM || null,
+          priceL: formData.priceL || null,
           userId: auth.currentUser?.uid,
           updatedAt: new Date().toISOString(),
           currentStock: 9999, // Placeholder
@@ -63,7 +69,7 @@ export default function Inventory() {
       }
       setIsModalOpen(false);
       setEditingProduct(null);
-      setFormData({ name: '', price: 0, category: 'Coffee' });
+      setFormData({ name: '', price: 0, priceM: 0, priceL: 0, category: 'Coffee' });
     } catch (err) {
       console.error(err);
     }
@@ -138,13 +144,39 @@ export default function Inventory() {
                   <td className="px-4 sm:px-6 py-2.5 sm:py-4">
                     <div className="font-bold text-stone-900 text-xs sm:text-sm">{p.name}</div>
                     <div className="text-[10px] sm:text-xs text-stone-500 font-medium">{p.category}</div>
-                    <div className="sm:hidden font-black text-stone-900 mt-0.5 text-[10px]">{formatCurrency(p.price)}</div>
+                    {p.priceM || p.priceL ? (
+                      <div className="sm:hidden text-[10px] text-amber-800 font-semibold mt-0.5">
+                        {p.priceM ? `M: ${formatCurrency(p.priceM)}` : ''} 
+                        {p.priceM && p.priceL ? ' | ' : ''} 
+                        {p.priceL ? `L: ${formatCurrency(p.priceL)}` : ''}
+                      </div>
+                    ) : (
+                      <div className="sm:hidden font-black text-stone-900 mt-0.5 text-[10px]">{formatCurrency(p.price)}</div>
+                    )}
                   </td>
-                  <td className="px-6 py-4 font-medium text-stone-700 hidden sm:table-cell text-sm">{formatCurrency(p.price)}</td>
+                  <td className="px-6 py-4 font-medium text-stone-700 hidden sm:table-cell text-sm">
+                    <div className="font-bold">{formatCurrency(p.price)}</div>
+                    {(p.priceM || p.priceL) && (
+                      <div className="text-xs text-[#8c6d58] font-semibold mt-0.5 space-x-2">
+                        {p.priceM ? <span className="bg-stone-100 px-1.5 py-0.5 rounded">M: {formatCurrency(p.priceM)}</span> : null}
+                        {p.priceL ? <span className="bg-stone-100 px-1.5 py-0.5 rounded">L: {formatCurrency(p.priceL)}</span> : null}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-4 sm:px-6 py-2.5 sm:py-4 text-right">
                     <div className="flex justify-end gap-1 sm:gap-2">
                        <button 
-                         onClick={() => { setEditingProduct(p); setFormData({ name: p.name, price: p.price, category: p.category }); setIsModalOpen(true); }}
+                         onClick={() => { 
+                           setEditingProduct(p); 
+                           setFormData({ 
+                             name: p.name, 
+                             price: p.price, 
+                             priceM: p.priceM || 0,
+                             priceL: p.priceL || 0,
+                             category: p.category 
+                           }); 
+                           setIsModalOpen(true); 
+                         }}
                          className="p-1.5 sm:p-2 text-stone-400 hover:text-stone-900 hover:bg-stone-100 rounded-lg transition-all"
                        >
                          <Edit2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
@@ -237,9 +269,19 @@ export default function Inventory() {
                     <option value="Food">Đồ ăn / Bánh</option>
                   </select>
                 </div>
-                <div>
-                  <label className="block text-sm font-bold text-stone-700 mb-1">Giá bán (VNĐ) *</label>
-                  <input type="number" required value={formData.price} onChange={e => setFormData({...formData, price: Number(e.target.value)})} className="w-full border border-stone-200 rounded-xl px-4 py-2 outline-none focus:ring-2 focus:ring-stone-200" />
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  <div>
+                    <label className="block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1">Giá mặc định (VNĐ) *</label>
+                    <input type="number" required value={formData.price || ''} onChange={e => setFormData({...formData, price: Number(e.target.value)})} className="w-full border border-stone-200 rounded-xl px-4 py-2 outline-none focus:ring-2 focus:ring-stone-200 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1">Giá Size M (Tùy chọn)</label>
+                    <input type="number" placeholder="Chọn nếu bán" value={formData.priceM || ''} onChange={e => setFormData({...formData, priceM: Number(e.target.value)})} className="w-full border border-stone-200 rounded-xl px-4 py-2 outline-none focus:ring-2 focus:ring-stone-200 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1">Giá Size L (Tùy chọn)</label>
+                    <input type="number" placeholder="Chọn nếu bán" value={formData.priceL || ''} onChange={e => setFormData({...formData, priceL: Number(e.target.value)})} className="w-full border border-stone-200 rounded-xl px-4 py-2 outline-none focus:ring-2 focus:ring-stone-200 text-sm" />
+                  </div>
                 </div>
                 <button type="submit" className="w-full bg-stone-900 text-white font-bold py-3 rounded-xl mt-4 shadow-xl hover:bg-stone-800 transition-all">LƯU THÔNG TIN</button>
               </form>

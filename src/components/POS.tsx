@@ -41,9 +41,12 @@ export default function POS() {
   const [newProductFormData, setNewProductFormData] = useState({
     name: '',
     price: 0,
+    priceM: 0,
+    priceL: 0,
     category: 'Coffee' as 'Coffee' | 'Tea' | 'Food'
   });
   const [isAddingProduct, setIsAddingProduct] = useState(false);
+  const [selectedProductForSize, setSelectedProductForSize] = useState<Product | null>(null);
 
   // Draft / Invoice Preview states
   const [drafts, setDrafts] = useState<any[]>([]);
@@ -101,6 +104,8 @@ export default function POS() {
       await addDoc(collection(db, 'products'), {
         name: newProductFormData.name.trim(),
         price: Number(newProductFormData.price),
+        priceM: newProductFormData.priceM || null,
+        priceL: newProductFormData.priceL || null,
         category: newProductFormData.category,
         userId: auth.currentUser.uid,
         updatedAt: new Date().toISOString(),
@@ -108,7 +113,7 @@ export default function POS() {
         minStock: 0,
         unit: 'ly'
       });
-      setNewProductFormData({ name: '', price: 0, category: 'Coffee' });
+      setNewProductFormData({ name: '', price: 0, priceM: 0, priceL: 0, category: 'Coffee' });
       setIsAddModalOpen(false);
     } catch (error: any) {
       console.error(error);
@@ -146,21 +151,25 @@ export default function POS() {
     });
   }, []);
 
-  const addToCart = (product: Product) => {
+  const addToCart = (product: Product, selectedSize?: 'M' | 'L') => {
+    const finalPrice = selectedSize === 'M' ? (product.priceM || product.price) : selectedSize === 'L' ? (product.priceL || product.price) : product.price;
+    const finalName = selectedSize ? `${product.name} (Size ${selectedSize})` : product.name;
+    const cartItemId = selectedSize ? `${product.id}-${selectedSize}` : product.id;
+
     setCart(prev => {
-      const existing = prev.find(item => item.productId === product.id);
+      const existing = prev.find(item => item.productId === cartItemId && item.size === selectedSize);
       if (existing) {
         return prev.map(item => 
-          item.productId === product.id ? { ...item, quantity: item.quantity + 1 } : item
+          (item.productId === cartItemId && item.size === selectedSize) ? { ...item, quantity: item.quantity + 1 } : item
         );
       }
-      return [...prev, { productId: product.id, name: product.name, quantity: 1, price: product.price }];
+      return [...prev, { productId: cartItemId, name: finalName, quantity: 1, price: finalPrice, size: selectedSize }];
     });
   };
 
-  const updateQuantity = (productId: string, delta: number) => {
+  const updateQuantity = (productId: string, size: 'M' | 'L' | undefined, delta: number) => {
     setCart(prev => prev.map(item => {
-      if (item.productId === productId) {
+      if (item.productId === productId && item.size === size) {
         const newQty = Math.max(0, item.quantity + delta);
         return { ...item, quantity: newQty };
       }
@@ -168,9 +177,9 @@ export default function POS() {
     }).filter(item => item.quantity > 0));
   };
 
-  const updatePrice = (productId: string, newPrice: number) => {
+  const updatePrice = (productId: string, size: 'M' | 'L' | undefined, newPrice: number) => {
     setCart(prev => prev.map(item => 
-      item.productId === productId ? { ...item, price: newPrice } : item
+      (item.productId === productId && item.size === size) ? { ...item, price: newPrice } : item
     ));
   };
 
@@ -282,7 +291,11 @@ export default function POS() {
                key={p.id}
                whileTap={{ scale: 0.98 }}
                onClick={() => {
-                 addToCart(p);
+                 if (p.priceM || p.priceL) {
+                   setSelectedProductForSize(p);
+                 } else {
+                   addToCart(p);
+                 }
                }}
                className={cn(
                  "bg-white p-2.5 sm:p-4 rounded-xl sm:rounded-2xl border border-stone-200 shadow-sm text-left group transition-all hover:shadow-xl hover:border-stone-300 relative overflow-hidden flex lg:flex-col items-center lg:items-stretch gap-3 lg:gap-0"
@@ -293,7 +306,21 @@ export default function POS() {
                </div>
                <div className="flex-1 min-w-0">
                  <h4 className="font-bold text-stone-900 text-xs sm:text-base mb-0 sm:mb-1 truncate">{p.name}</h4>
-                 <p className="text-[10px] sm:text-sm font-medium text-stone-500">{formatCurrency(p.price)}</p>
+                 <p className="text-[10px] sm:text-sm font-medium text-stone-500">Giá thường: {formatCurrency(p.price)}</p>
+                 {(p.priceM || p.priceL) && (
+                   <div className="flex gap-1.5 mt-1 sm:mt-1.5 flex-wrap">
+                     {p.priceM ? (
+                       <span className="text-[9px] sm:text-[10px] font-bold text-stone-600 bg-stone-100 px-1.5 py-0.5 rounded-md">
+                         Size M: {formatCurrency(p.priceM)}
+                       </span>
+                     ) : null}
+                     {p.priceL ? (
+                       <span className="text-[9px] sm:text-[10px] font-bold text-stone-600 bg-stone-100 px-1.5 py-0.5 rounded-md">
+                         Size L: {formatCurrency(p.priceL)}
+                       </span>
+                     ) : null}
+                   </div>
+                 )}
                </div>
                <div className="flex items-center justify-end shrink-0">
                  <div className="bg-stone-900 text-white p-1.5 rounded-lg opacity-100 lg:opacity-0 group-hover:opacity-100 transition-opacity">
@@ -408,7 +435,7 @@ export default function POS() {
             ) : (
               cart.map((item) => (
                 <motion.div
-                  key={item.productId}
+                  key={`${item.productId}-${item.size || 'default'}`}
                   initial={{ opacity: 0, x: 20 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -20 }}
@@ -420,7 +447,7 @@ export default function POS() {
                       <input 
                         type="number"
                         value={item.price}
-                        onChange={(e) => updatePrice(item.productId, Number(e.target.value))}
+                        onChange={(e) => updatePrice(item.productId, item.size, Number(e.target.value))}
                         className="w-16 sm:w-20 bg-transparent border-b border-dashed border-stone-200 text-[10px] sm:text-xs text-stone-500 font-bold focus:border-stone-900 outline-none transition-colors"
                       />
                       <span className="text-[10px] text-stone-400">đ</span>
@@ -428,14 +455,14 @@ export default function POS() {
                   </div>
                   <div className="flex items-center gap-3 bg-stone-100 p-1 rounded-xl">
                     <button 
-                      onClick={() => updateQuantity(item.productId, -1)}
+                      onClick={() => updateQuantity(item.productId, item.size, -1)}
                       className="w-8 h-8 rounded-lg bg-white border border-stone-200 flex items-center justify-center hover:bg-stone-50 transition-colors shadow-sm"
                     >
                       <Minus className="w-3 h-3" />
                     </button>
                     <span className="w-6 text-center font-bold text-stone-800">{item.quantity}</span>
                     <button 
-                      onClick={() => updateQuantity(item.productId, 1)}
+                      onClick={() => updateQuantity(item.productId, item.size, 1)}
                       className="w-8 h-8 rounded-lg bg-stone-900 text-white flex items-center justify-center hover:bg-stone-800 transition-colors shadow-lg"
                     >
                       <Plus className="w-3 h-3" />
@@ -483,21 +510,51 @@ export default function POS() {
                     />
                   </div>
 
-                  {/* Price field */}
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-stone-600 uppercase tracking-wider block">Giá bán (VNĐ)</label>
-                    <input
-                      type="number"
-                      required
-                      min="0"
-                      placeholder="Ví dụ: 25000"
-                      value={newProductFormData.price || ''}
-                      onChange={(e) => {
-                        const val = Math.max(0, parseInt(e.target.value) || 0);
-                        setNewProductFormData(prev => ({ ...prev, price: val }));
-                      }}
-                      className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-stone-200"
-                    />
+                  {/* Price fields */}
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-stone-600 uppercase tracking-wider block">Giá bán *</label>
+                      <input
+                        type="number"
+                        required
+                        min="0"
+                        placeholder="Ví dụ: 25000"
+                        value={newProductFormData.price || ''}
+                        onChange={(e) => {
+                          const val = Math.max(0, parseInt(e.target.value) || 0);
+                          setNewProductFormData(prev => ({ ...prev, price: val }));
+                        }}
+                        className="w-full bg-stone-50 border border-stone-200 rounded-xl px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-stone-200"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-stone-600 uppercase tracking-wider block">Giá Size M</label>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="Tùy chọn"
+                        value={newProductFormData.priceM || ''}
+                        onChange={(e) => {
+                          const val = Math.max(0, parseInt(e.target.value) || 0);
+                          setNewProductFormData(prev => ({ ...prev, priceM: val }));
+                        }}
+                        className="w-full bg-stone-50 border border-stone-200 rounded-xl px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-stone-200"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-stone-600 uppercase tracking-wider block">Giá Size L</label>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="Tùy chọn"
+                        value={newProductFormData.priceL || ''}
+                        onChange={(e) => {
+                          const val = Math.max(0, parseInt(e.target.value) || 0);
+                          setNewProductFormData(prev => ({ ...prev, priceL: val }));
+                        }}
+                        className="w-full bg-stone-50 border border-stone-200 rounded-xl px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-stone-200"
+                      />
+                    </div>
                   </div>
 
                   {/* Category select */}
@@ -1022,6 +1079,105 @@ export default function POS() {
                 className="flex-[1.5] bg-stone-950 hover:bg-stone-850 text-white font-bold py-3 rounded-2xl transition-all text-xs cursor-pointer shadow-md"
               >
                 ĐÓNG
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Size Selection Modal */}
+      {selectedProductForSize && (
+        <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 15 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 15 }}
+            className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden text-left border border-stone-100 z-50"
+          >
+            {/* Header */}
+            <div className="p-6 border-b border-stone-100 bg-stone-50/50 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-stone-950">Chọn kích cỡ (Size)</h3>
+                <p className="text-xs text-stone-500 mt-1">{selectedProductForSize.name}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedProductForSize(null)}
+                className="p-1 px-1.5 hover:bg-stone-100 text-stone-400 hover:text-stone-900 rounded-lg transition-colors font-bold text-sm flex items-center gap-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Sizes List */}
+            <div className="p-6 space-y-3">
+              {/* Size Regular option */}
+              <button
+                type="button"
+                onClick={() => {
+                  addToCart(selectedProductForSize);
+                  setSelectedProductForSize(null);
+                }}
+                className="w-full p-4 rounded-2xl border border-stone-200 hover:border-stone-900 hover:bg-stone-50 flex items-center justify-between group transition-all text-left cursor-pointer"
+              >
+                <div>
+                  <span className="font-bold text-stone-900 text-sm block">Giá thường (Mặc định)</span>
+                  <span className="text-xs text-stone-500">Cỡ tiêu chuẩn</span>
+                </div>
+                <span className="font-bold text-stone-900 text-base group-hover:scale-105 transition-transform">
+                  {formatCurrency(selectedProductForSize.price)}
+                </span>
+              </button>
+
+              {/* Size M Option */}
+              {selectedProductForSize.priceM ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    addToCart(selectedProductForSize, 'M');
+                    setSelectedProductForSize(null);
+                  }}
+                  className="w-full p-4 rounded-2xl border border-stone-200 hover:border-stone-900 hover:bg-stone-50 flex items-center justify-between group transition-all text-left cursor-pointer"
+                >
+                  <div>
+                    <span className="font-bold text-[#8c6d58] text-sm block">Size M</span>
+                    <span className="text-xs text-stone-500">Kích thước vừa</span>
+                  </div>
+                  <span className="font-bold text-stone-900 text-base group-hover:scale-105 transition-transform">
+                    {formatCurrency(selectedProductForSize.priceM)}
+                  </span>
+                </button>
+              ) : null}
+
+              {/* Size L Option */}
+              {selectedProductForSize.priceL ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    addToCart(selectedProductForSize, 'L');
+                    setSelectedProductForSize(null);
+                  }}
+                  className="w-full p-4 rounded-2xl border border-stone-200 hover:border-stone-900 hover:bg-stone-50 flex items-center justify-between group transition-all text-left cursor-pointer"
+                >
+                  <div>
+                    <span className="font-bold text-emerald-700 text-sm block">Size L</span>
+                    <span className="text-xs text-stone-500">Kích thước lớn</span>
+                  </div>
+                  <span className="font-bold text-stone-900 text-base group-hover:scale-105 transition-transform">
+                    {formatCurrency(selectedProductForSize.priceL)}
+                  </span>
+                </button>
+              ) : null}
+            </div>
+
+            {/* Cancel Button */}
+            <div className="p-6 bg-stone-50 border-t border-stone-100 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setSelectedProductForSize(null)}
+                className="w-full bg-stone-200 hover:bg-stone-300 text-stone-700 font-bold py-2.5 rounded-xl transition-all text-sm cursor-pointer shadow-sm text-center"
+              >
+                HỦY BỎ
               </button>
             </div>
           </motion.div>
