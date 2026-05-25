@@ -9,6 +9,8 @@ export interface Product {
   unit: string;
   minStock: number;
   updatedAt: string;
+  priceM?: number;
+  priceL?: number;
 }
 
 export interface OrderItem {
@@ -16,6 +18,7 @@ export interface OrderItem {
   name: string;
   quantity: number;
   price: number;
+  size?: 'M' | 'L';
 }
 
 export interface Order {
