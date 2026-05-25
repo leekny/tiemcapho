@@ -8,6 +8,7 @@ import {
   doc,
   increment,
   setDoc,
+  getDoc,
   query,
   where,
   deleteDoc
@@ -25,6 +26,22 @@ export default function POS() {
   const [category, setCategory] = useState<string>('All');
   const [isProcessing, setIsProcessing] = useState(false);
   const [mobileView, setMobileView] = useState<'menu' | 'cart'>('menu');
+
+  // Custom Toast State
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    setToast({ message, type });
+  };
+
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => {
+        setToast(null);
+      }, 3500);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
 
   // Receipt Settings
   const [showReceiptSettings, setShowReceiptSettings] = useState(false);
@@ -61,8 +78,21 @@ export default function POS() {
     if (cart.length === 0 || !auth.currentUser) return;
     setIsSavingDraft(true);
     try {
+      const sanitizedItems = cart.map(item => {
+        const itemData: any = {
+          productId: item.productId,
+          name: item.name,
+          quantity: item.quantity,
+          price: item.price
+        };
+        if (item.size !== undefined && item.size !== null) {
+          itemData.size = item.size;
+        }
+        return itemData;
+      });
+
       await addDoc(collection(db, 'drafts'), {
-        items: cart,
+        items: sanitizedItems,
         totalAmount: total,
         note: draftNote.trim() || `Bản nháp #${Math.floor(Math.random() * 1000)}`,
         userId: auth.currentUser.uid,
@@ -70,10 +100,10 @@ export default function POS() {
       });
       setDraftNote('');
       setIsSavingDraftModalOpen(false);
-      alert('Đã lưu bản nháp thành công!');
+      showToast('Đã lưu bản nháp thành công!', 'success');
     } catch (error: any) {
       console.error(error);
-      alert('Không thể lưu bản nháp: ' + error.message);
+      showToast('Không thể lưu bản nháp: ' + error.message, 'error');
     } finally {
       setIsSavingDraft(false);
     }
@@ -87,12 +117,12 @@ export default function POS() {
 
   const handleDeleteDraft = async (draftId: string, event: React.MouseEvent) => {
     event.stopPropagation();
-    if (!confirm('Bạn có chắc là muốn xóa bản nháp này không?')) return;
     try {
       await deleteDoc(doc(db, 'drafts', draftId));
+      showToast('Đã xóa bản nháp thành công!', 'success');
     } catch (error: any) {
       console.error(error);
-      alert('Không thể xóa bản nháp: ' + error.message);
+      showToast('Không thể xóa bản nháp: ' + error.message, 'error');
     }
   };
 
@@ -115,9 +145,10 @@ export default function POS() {
       });
       setNewProductFormData({ name: '', price: 0, priceM: 0, priceL: 0, category: 'Coffee' });
       setIsAddModalOpen(false);
+      showToast('Đã thêm món mới thành công!', 'success');
     } catch (error: any) {
       console.error(error);
-      alert('Không thể thêm món mới: ' + error.message);
+      showToast('Không thể thêm món mới: ' + error.message, 'error');
     } finally {
       setIsAddingProduct(false);
     }
@@ -192,8 +223,21 @@ export default function POS() {
 
     try {
       // 1. Create order
+      const sanitizedItems = cart.map(item => {
+        const itemData: any = {
+          productId: item.productId,
+          name: item.name,
+          quantity: item.quantity,
+          price: item.price
+        };
+        if (item.size !== undefined && item.size !== null) {
+          itemData.size = item.size;
+        }
+        return itemData;
+      });
+
       const orderRef = await addDoc(collection(db, 'orders'), {
-        items: cart,
+        items: sanitizedItems,
         totalAmount: total,
         status: 'completed',
         userId,
@@ -213,20 +257,27 @@ export default function POS() {
 
       // 3. Update accounting summary
       const summaryRef = doc(db, 'metadata', userId);
-      await updateDoc(summaryRef, {
-        income: increment(total)
-      }).catch(async (err) => {
-        // If meta doc doesn't exist, create it
-        if (err.code === 'not-found') {
+      try {
+        const docSnap = await getDoc(summaryRef);
+        if (docSnap.exists()) {
+          await updateDoc(summaryRef, {
+            income: increment(total)
+          });
+        } else {
           await setDoc(summaryRef, { income: total, expense: 0 });
         }
-      });
+      } catch (metaErr) {
+        console.warn("Failed to update metadata atomically, running fallback merge:", metaErr);
+        await setDoc(summaryRef, { income: increment(total), expense: 0 }, { merge: true }).catch(err => {
+          console.error("Metadata recovery write failed:", err);
+        });
+      }
 
       setCart([]);
-      alert('Thanh toán thành công!');
-    } catch (error) {
+      showToast('Thanh toán thành công!', 'success');
+    } catch (error: any) {
       console.error(error);
-      alert('Thanh toán thất bại.');
+      showToast('Thanh toán thất bại: ' + (error?.message || error), 'error');
     } finally {
       setIsProcessing(false);
     }
@@ -755,10 +806,10 @@ export default function POS() {
                   <button 
                     onClick={() => {
                       if (cart.length === 0) {
-                        alert('Giỏ hàng trống!');
+                        showToast('Giỏ hàng trống!', 'error');
                         return;
                       }
-                      alert('Đã gửi lệnh in bản nháp đến máy in ' + receiptSettings.paperSize);
+                      showToast('Đã gửi lệnh in bản nháp đến máy in ' + receiptSettings.paperSize, 'success');
                     }}
                     className="flex-1 bg-stone-100 text-stone-600 font-bold py-4 rounded-2xl hover:bg-stone-200 transition-all flex items-center justify-center gap-2 uppercase tracking-widest text-xs"
                   >
@@ -1065,7 +1116,7 @@ export default function POS() {
               <button
                 type="button"
                 onClick={() => {
-                  alert('Tiến trình in hóa đơn mô phỏng thành công!');
+                  showToast('Tiến trình in hóa đơn mô phỏng thành công!', 'success');
                   setIsInvoicePreviewOpen(false);
                 }}
                 className="flex-1 bg-white border border-stone-200 text-stone-700 font-bold py-3 rounded-2xl hover:bg-stone-50 transition-all text-xs flex items-center justify-center gap-2 cursor-pointer shadow-sm"
@@ -1182,6 +1233,35 @@ export default function POS() {
             </div>
           </motion.div>
         </div>
+      )}
+
+      {/* Floating Toast Notification */}
+      {toast && (
+        <motion.div
+          initial={{ opacity: 0, y: -50, scale: 0.95 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: -20, scale: 0.95 }}
+          className={cn(
+            "fixed top-6 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-3 px-5 py-3.5 rounded-2xl shadow-xl border text-xs sm:text-sm font-bold min-w-[280px] max-w-sm justify-between transition-all backdrop-blur-md",
+            toast.type === 'success' && "bg-emerald-50 text-emerald-800 border-emerald-250",
+            toast.type === 'error' && "bg-red-50 text-red-800 border-red-200",
+            toast.type === 'info' && "bg-stone-50 text-stone-800 border-stone-200"
+          )}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-base leading-none">
+              {toast.type === 'success' ? '✓' : toast.type === 'error' ? '✗' : 'ℹ'}
+            </span>
+            <span>{toast.message}</span>
+          </div>
+          <button 
+            type="button"
+            onClick={() => setToast(null)}
+            className="p-1 hover:bg-stone-100 rounded-lg text-stone-400 hover:text-stone-700 transition bg-transparent"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </motion.div>
       )}
     </AnimatePresence>
     </>

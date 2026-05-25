@@ -112,9 +112,22 @@ export default function Dashboard() {
       const newAmount = editedStatus === 'completed' ? newTotal : 0;
       const diff = newAmount - oldAmount;
 
+      const sanitizedItems = editedItems.map(item => {
+        const itemData: any = {
+          productId: item.productId,
+          name: item.name,
+          quantity: item.quantity,
+          price: item.price
+        };
+        if (item.size !== undefined && item.size !== null) {
+          itemData.size = item.size;
+        }
+        return itemData;
+      });
+
       // 1. Update order document
       await updateDoc(doc(db, 'orders', selectedOrder.id), {
-        items: editedItems,
+        items: sanitizedItems,
         totalAmount: newTotal,
         status: editedStatus,
       });
