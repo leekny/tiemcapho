@@ -41,6 +41,19 @@
         "relatedObjectId": { "type": "string" }
       },
       "required": ["type", "amount", "category", "date"]
+    },
+    "Draft": {
+      "title": "Draft",
+      "description": "Saved bill or draft order",
+      "type": "object",
+      "properties": {
+        "items": { "type": "array" },
+        "totalAmount": { "type": "number" },
+        "note": { "type": "string" },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["items", "totalAmount", "userId", "createdAt"]
     }
   },
   "firestore": {
@@ -55,6 +68,10 @@
     "transactions": {
       "schema": "Transaction",
       "description": "Financial ledger"
+    },
+    "drafts": {
+      "schema": "Draft",
+      "description": "Saved draft receipts/bills"
     },
     "metadata": {
       "description": "System summaries and counters"

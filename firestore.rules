@@ -20,21 +20,36 @@ service cloud.firestore {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isOwner(resourceData) {
+      return isSignedIn() && (
+        !('userId' in resourceData) || 
+        resourceData.userId == request.auth.uid || 
+        resourceData.get('userId', '') == '' ||
+        resourceData.get('userId', '') == request.auth.uid
+      );
+    }
+
     // Products
     match /products/{productId} {
-      allow read, update, delete: if isSuperAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow read, update, delete: if isSuperAdmin() || isOwner(resource);
       allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
     }
 
     // Orders
     match /orders/{orderId} {
-      allow read, update, delete: if isSuperAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow read, update, delete: if isSuperAdmin() || isOwner(resource);
       allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
     }
 
     // Transactions (Ledger)
     match /transactions/{transactionId} {
-      allow read, update, delete: if isSuperAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow read, update, delete: if isSuperAdmin() || isOwner(resource);
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+    }
+
+    // Drafts (Saved bills)
+    match /drafts/{draftId} {
+      allow read, update, delete: if isSuperAdmin() || isOwner(resource);
       allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
     }
 
